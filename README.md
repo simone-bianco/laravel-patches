@@ -1,9 +1,3 @@
-Of course. My apologies, that's a great point. Using more universal, real-world examples makes the documentation much more accessible.
-
-I have rewritten the entire `README.md` file, replacing all the RPG/D\&D examples with common, concrete scenarios you'd find in many web applications, such as managing roles, settings, and populating data. The structure remains the same.
-
------
-
 # Laravel Data Patches
 
 [](https://www.google.com/search?q=https://packagist.org/packages/simonebianco/laravel-patches)
