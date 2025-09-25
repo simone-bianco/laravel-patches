@@ -15,14 +15,18 @@
         "illuminate/cache": "^12.0"
     },
     "require-dev": {
-        "orchestra/testbench": "^8.0",
-        "phpunit/phpunit": "^10.0",
-        "spatie/laravel-package-tools": "^2.0",
-        "mockery/mockery": "^1.5"
+        "phpunit/phpunit": "^12.3",
+        "orchestra/testbench": "^10.6",
+        "spatie/laravel-package-tools": "^1.92"
     },
     "autoload": {
         "psr-4": {
             "SimoneBianco\\Patches\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "SimoneBianco\\Patches\\Tests\\": "tests/"
         }
     },
     "extra": {

@@ -8,15 +8,16 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('data_patches', function (Blueprint $table) {
+        Schema::create('sb_patches', function (Blueprint $table): void {
             $table->id();
             $table->string('patch');
             $table->integer('batch');
+            $table->timestamps();
         });
     }
 
     public function down(): void
     {
-        Schema::dropIfExists('data_patches');
+        Schema::dropIfExists('sb_patches');
     }
 };

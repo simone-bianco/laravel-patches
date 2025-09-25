@@ -44,6 +44,24 @@ class Patches
             ->all();
     }
 
+    protected function getClassName(string $fullPath): string
+    {
+        $className = Str::of($fullPath)
+            ->basename('.php')
+            ->replaceMatches('/^\d{4}_\d{2}_\d{2}_\d+_/u', '')
+            ->studly()
+            ->toString();
+
+        $content = file_get_contents($fullPath);
+
+        if (preg_match('/^namespace\s+([^;]+);/m', $content, $matches)) {
+            $namespace = $matches[1];
+            return "$namespace\\$className";
+        }
+
+        return $className;
+    }
+
     /**
      * Runs all pending patches in the database/patches directory.
      *
@@ -54,7 +72,7 @@ class Patches
         $log = $log ?: fn ($message) => null;
         $this->executeGlobalHook(config('patches.callbacks.up.before'), $log);
 
-        $lastBatch = $this->db->table('data_patches')->max('batch') ?? 0;
+        $lastBatch = $this->db->table('sb_patches')->max('batch') ?? 0;
         $currentBatch = $lastBatch + 1;
 
         if ($before) {
@@ -63,7 +81,7 @@ class Patches
 
         $patchFiles = $this->findAllPatchFiles();
 
-        $executedPatches = $this->db->table('data_patches')->pluck('patch')->all();
+        $executedPatches = $this->db->table('sb_patches')->pluck('patch')->all();
 
         $patchesToRun = 0;
         $patchesBasePath = database_path('patches') . DIRECTORY_SEPARATOR;
@@ -80,14 +98,12 @@ class Patches
 
             try {
                 $this->db->transaction(function () use ($fullPath, $patchIdentifier, $currentBatch) {
+                    $className = $this->getClassName($fullPath);
                     require_once $fullPath;
-
-                    $className = Str::studly(Str::before(basename($fullPath), '.php'));
-
                     $patchInstance = new $className;
                     $patchInstance->up();
 
-                    $this->db->table('data_patches')->insert([
+                    $this->db->table('sb_patches')->insert([
                         'patch' => $patchIdentifier,
                         'batch' => $currentBatch
                     ]);
@@ -157,14 +173,14 @@ class Patches
      */
     protected function performBatchRollback(Closure $log): int
     {
-        $lastBatch = $this->db->table('data_patches')->max('batch');
+        $lastBatch = $this->db->table('sb_patches')->max('batch');
 
         if (!$lastBatch) {
             $log('Nothing to rollback.');
             return 0;
         }
 
-        $patchesToRollback = $this->db->table('data_patches')
+        $patchesToRollback = $this->db->table('sb_patches')
             ->where('batch', $lastBatch)
             ->orderBy('id', 'desc')
             ->get();
@@ -176,7 +192,7 @@ class Patches
 
         $this->executeDownMethods($patchesToRollback, $log);
 
-        $this->db->table('data_patches')->where('batch', $lastBatch)->delete();
+        $this->db->table('sb_patches')->where('batch', $lastBatch)->delete();
 
         return $patchesToRollback->count();
     }
@@ -190,7 +206,7 @@ class Patches
             return 0;
         }
 
-        $patchesToRollback = $this->db->table('data_patches')
+        $patchesToRollback = $this->db->table('sb_patches')
             ->orderBy('batch', 'desc')
             ->orderBy('id', 'desc')
             ->limit($steps)
@@ -204,7 +220,7 @@ class Patches
         $this->executeDownMethods($patchesToRollback, $log);
 
         $idsToDelete = $patchesToRollback->pluck('id');
-        $this->db->table('data_patches')->whereIn('id', $idsToDelete)->delete();
+        $this->db->table('sb_patches')->whereIn('id', $idsToDelete)->delete();
 
         return $patchesToRollback->count();
     }
@@ -216,7 +232,7 @@ class Patches
      */
     protected function performFullRollback(Closure $log): int
     {
-        $patchesToRollback = $this->db->table('data_patches')
+        $patchesToRollback = $this->db->table('sb_patches')
             ->orderBy('batch', 'desc')
             ->orderBy('id', 'desc')
             ->get();
@@ -228,7 +244,7 @@ class Patches
 
         $this->executeDownMethods($patchesToRollback, $log);
 
-        $this->db->table('data_patches')->truncate();
+        $this->db->table('sb_patches')->truncate();
 
         return $patchesToRollback->count();
     }
@@ -251,7 +267,7 @@ class Patches
 
             require_once $file;
 
-            $className = Str::studly(Str::before(basename($file), '.php'));
+            $className = $this->getClassName($file);
             $instance = new $className();
 
             if (!method_exists($instance, 'down')) {
