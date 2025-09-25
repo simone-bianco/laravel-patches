@@ -1,0 +1,37 @@
+{
+    "name": "simone-bianco/laravel-patches",
+    "version": "1.0.0",
+    "description": "Laravel package to manage patches for your application, like database migrations but for code.",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {"name": "Simone Bianco"}
+    ],
+    "require": {
+        "php": ">=8.3",
+        "illuminate/support": "^12.0",
+        "illuminate/validation": "^12.0",
+        "illuminate/console": "^12.0",
+        "illuminate/cache": "^12.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^8.0",
+        "phpunit/phpunit": "^10.0",
+        "spatie/laravel-package-tools": "^2.0",
+        "mockery/mockery": "^1.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "SimoneBianco\\Patches\\": "src/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "SimoneBianco\\Patches\\PatchesServiceProvider"
+            ]
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
