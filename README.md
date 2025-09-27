@@ -89,6 +89,14 @@ class ClearCache
 
 -----
 
+## Directory structure
+
+Below is an example structure for organizing your patches. You can nest as deep as you need:
+
+![Directory structure](z-doc/directories.png)
+
+-----
+
 ## Usage
 
 ### 1\. Creating a Patch
@@ -144,12 +152,45 @@ class SeedInitialRolesAndPermissions
 }
 ```
 
-### 3\. Applying Patches ⚡️
+#### Transactions (optional)
 
-To run all pending patches that haven't been executed yet, use the `patch:apply` command. The system will find all `.php` files recursively, sort them alphabetically by path, and execute them in order.
+If you need your patch to run inside a single database transaction, set the public `$transactional` flag on your patch class. When `true`, the runner will wrap `up()` and `down()` in a DB transaction.
+
+```php
+<?php
+
+use SimoneBianco\Patches\Patch;
+
+return new class extends Patch
+{
+    public bool $transactional = true; // run inside a transaction
+
+    public function up(): void
+    {
+        // ... data changes
+    }
+
+    public function down(): void
+    {
+        // ... reverse data changes
+    }
+};
+```
+
+Note: transactions are disabled by default (`false`). Enable them only when you need all operations in the patch to succeed or fail together.
+
+### 3. Applying Patches ⚡️
+
+To run all pending patches that haven't been executed yet, use the `patch:run` command. The system will find all `.php` files recursively, sort them alphabetically by path, and execute them in order.
 
 ```bash
-php artisan patch:apply
+php artisan patch:run
+```
+
+You can also limit how many patches are applied in one run using the `--step` option:
+
+```bash
+php artisan patch:run --step=1
 ```
 
 #### Forcing a Single Patch
@@ -159,16 +200,24 @@ For debugging or testing purposes, you can force-run a single patch, even if it 
 The patch name is its path relative to the `patches` directory.
 
 ```bash
-php artisan patch:run settings/site/2025_09_25_000001_add_maintenance_mode_setting
+php artisan patch:single settings/site/2025_09_25_000001_add_maintenance_mode_setting
 ```
 
-### 4\. Rolling Back Patches ↩️
+#### Re-apply from scratch (fresh)
+
+Roll back applied patches and re-apply all pending patches in one go:
+
+```bash
+php artisan patch:fresh
+```
+
+### 4. Rolling Back Patches ↩️
 
 The `patch:rollback` command is powerful and flexible, mirroring Laravel's `migrate:rollback`.
 
 #### Roll Back the Last Batch
 
-This is the default behavior. It will roll back all patches that were applied in the last `patch:apply` run.
+This is the default behavior. It will roll back all patches that were applied in the last `patch:run` run.
 
 ```bash
 php artisan patch:rollback
