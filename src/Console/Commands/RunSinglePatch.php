@@ -10,7 +10,7 @@ class RunSinglePatch extends Command
     /**
      * @var string
      */
-    protected $signature = 'patch:run {name : The full name of the patch class to run (e.g., 2025_09_23_000001_add_core_game_systems)}';
+    protected $signature = 'patch:single {name : The full name of the patch class to run (e.g., 2025_09_23_000001_add_core_game_systems)}';
 
     /**
      * @var string

@@ -67,7 +67,7 @@ class Patches
      *
      * @throws Exception
      */
-    public function runPatches(?Closure $log = null, ?callable $before = null, ?callable $after = null): int
+    public function runPatches(?Closure $log = null, ?callable $before = null, ?callable $after = null, ?int $limit = null): int
     {
         $log = $log ?: fn ($message) => null;
         $this->executeGlobalHook(config('patches.callbacks.up.before'), $log);
@@ -97,19 +97,37 @@ class Patches
             $log(" - Applying patch: {$patchIdentifier}");
 
             try {
-                $this->db->transaction(function () use ($fullPath, $patchIdentifier, $currentBatch) {
-                    $className = $this->getClassName($fullPath);
-                    require_once $fullPath;
-                    $patchInstance = new $className;
-                    $patchInstance->up();
+                $returned = require $fullPath;
 
-                    $this->db->table('sb_patches')->insert([
-                        'patch' => $patchIdentifier,
-                        'batch' => $currentBatch
-                    ]);
-                });
+                if (is_object($returned) && method_exists($returned, 'up')) {
+                    $patchInstance = $returned;
+                } else {
+                    $className = $this->getClassName($fullPath);
+                    $patchInstance = new $className;
+                }
+
+                if ($patchInstance->transactional) {
+                    $this->db->beginTransaction();
+                }
+
+                if (method_exists($patchInstance, 'up')) {
+                    $patchInstance->up();
+                }
+
+                $this->db->table('sb_patches')->insert([
+                    'patch' => $patchIdentifier,
+                    'batch' => $currentBatch
+                ]);
+
+                if ($patchInstance->transactional) {
+                    $this->db->commit();
+                }
 
                 $patchesToRun++;
+
+                if ($limit !== null && $patchesToRun >= $limit) {
+                    break;
+                }
             } catch (Throwable $e) {
                 throw new Exception("Failed to apply patch {$patchIdentifier}: " . $e->getMessage(), 0, $e);
             }
@@ -265,16 +283,29 @@ class Patches
                 throw new Exception("Patch file not found: {$file}");
             }
 
-            require_once $file;
+            // Support both anonymous (returned instance) and named classes.
+            $returned = require $file;
 
-            $className = $this->getClassName($file);
-            $instance = new $className();
+            if (is_object($returned) && method_exists($returned, 'down')) {
+                $instance = $returned;
+            } else {
+                $className = $this->getClassName($file);
+                $instance = new $className;
+            }
 
             if (!method_exists($instance, 'down')) {
                 throw new Exception("Rollback failed. Method down() does not exist in patch: {$patchIdentifier}");
             }
 
+            if ($instance->transactional) {
+                $this->db->beginTransaction();
+            }
+
             $instance->down();
+
+            if ($instance->transactional) {
+                $this->db->commit();
+            }
         }
     }
 
@@ -290,11 +321,19 @@ class Patches
 
         try {
             $log(" - Force running patch: {$patchIdentifier}");
-            require_once $fullPath;
 
-            $className = Str::studly(Str::before(basename($fullPath), '.php'));
-            $patchInstance = new $className;
-            $patchInstance->up();
+            $returned = require $fullPath;
+            if (is_object($returned) && method_exists($returned, 'up')) {
+                $patchInstance = $returned;
+            } else {
+                $className = $this->getClassName($fullPath);
+                $patchInstance = new $className;
+            }
+
+            if (method_exists($patchInstance, 'up')) {
+                $patchInstance->up();
+            }
+
             $log('   - Patch executed successfully.');
 
             return true;
@@ -314,7 +353,9 @@ class Patches
     }
 
     /**
-     * Creates a new patch file with the correct naming convention.
+     * @param string $name
+     * @return string
+     * @throws Exception
      */
     public function createPatch(string $name): string
     {
@@ -323,14 +364,13 @@ class Patches
 
         $snakeName = Str::snake(trim($name));
         $fileName = $this->generateFileName($directoryPath, $snakeName);
-        $className = $this->generateClassName($fileName);
         $fullPath = $directoryPath.DIRECTORY_SEPARATOR.$fileName;
 
         if ($this->files->exists($fullPath)) {
             throw new Exception("Patch file {$fileName} already exists.");
         }
 
-        $fileContent = $this->createPatchFileContent($className);
+        $fileContent = $this->createPatchFileContent();
         $this->files->put($fullPath, $fileContent);
 
         return $fullPath;
@@ -373,20 +413,23 @@ class Patches
         return Str::studly($namePart);
     }
 
-    /**
-     * Creates the template content for a new patch file.
-     */
-    protected function createPatchFileContent(string $className): string
+    protected function createPatchFileContent(): string
     {
         return <<<PHP
 <?php
 
-class {$className}
+use SimoneBianco\\Patches\\Patch;
+
+return new class extends Patch
 {
     /**
+    * Indicates if the patch should be run within a transaction.
+    * @var bool
+    */
+    public bool \$transactional = false;
+
+    /**
      * Run the data patch.
-     *
-     * @return void
      */
     public function up(): void
     {
@@ -395,14 +438,12 @@ class {$className}
 
     /**
      * Reverse the data patch.
-     *
-     * @return void
      */
     public function down(): void
     {
         // Add logic to reverse the changes made in the up() method.
     }
-}
+};
 
 PHP;
     }

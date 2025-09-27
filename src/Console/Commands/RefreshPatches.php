@@ -3,20 +3,21 @@
 namespace SimoneBianco\Patches\Console\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Artisan;
 use SimoneBianco\Patches\Facades\Patches;
 use Throwable;
 
-class ApplyDataPatches extends Command
+class RefreshPatches extends Command
 {
     /**
      * @var string
      */
-    protected $signature = 'patches:run';
+    protected $signature = 'patch:fresh';
 
     /**
      * @var string
      */
-    protected $description = 'Apply all pending data patches.';
+    protected $description = 'Refreshes all data patches, rolling back the already installed and reapplying them.';
 
     /**
      * @return int
@@ -26,16 +27,8 @@ class ApplyDataPatches extends Command
         $this->info('🚀 Checking for pending data patches...');
 
         try {
-            $logger = fn ($message) => $this->line($message);
-
-            $patchesRun = Patches::runPatches($logger);
-
-            if ($patchesRun > 0) {
-                $this->info("✅ Success: {$patchesRun} new patch(es) have been applied.");
-            } else {
-                $this->info('👍 Your data is already up to date. Nothing to apply.');
-            }
-
+            Artisan::call('patch:rollback', [], $this->getOutput());
+            Artisan::call('patch:run', [], $this->getOutput());
         } catch (Throwable $e) {
             $this->error('❌ An error occurred while applying patches:');
             $this->error($e->getMessage());

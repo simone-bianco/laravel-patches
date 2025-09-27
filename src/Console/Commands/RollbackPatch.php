@@ -6,7 +6,7 @@ use Illuminate\Console\Command;
 use SimoneBianco\Patches\Facades\Patches;
 use Throwable;
 
-class RollbackDataPatch extends Command
+class RollbackPatch extends Command
 {
     /**
      * The name and signature of the console command.
