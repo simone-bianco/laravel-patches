@@ -9,10 +9,10 @@
     ],
     "require": {
         "php": ">=8.3",
-        "illuminate/support": "^12.0",
-        "illuminate/validation": "^12.0",
-        "illuminate/console": "^12.0",
-        "illuminate/cache": "^12.0"
+        "illuminate/support": "^12.0|^13.0",
+        "illuminate/validation": "^12.0|^13.0",
+        "illuminate/console": "^12.0|^13.0",
+        "illuminate/cache": "^12.0|^13.0"
     },
     "require-dev": {
         "phpunit/phpunit": "^12.3",
