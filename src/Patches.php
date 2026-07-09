@@ -8,7 +8,6 @@ use Illuminate\Database\ConnectionInterface;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
-use Symfony\Component\Finder\SplFileInfo;
 use Throwable;
 
 class Patches
@@ -17,31 +16,13 @@ class Patches
 
     protected ConnectionInterface $db;
 
+    protected PatchFileRepository $patchFiles;
+
     public function __construct(Filesystem $files, ConnectionInterface $db)
     {
         $this->files = $files;
         $this->db = $db;
-    }
-
-    /**
-     * Recursively finds all patch files and sorts them alphabetically by path.
-     *
-     * @return array
-     */
-    protected function findAllPatchFiles(): array
-    {
-        $directoryPath = database_path('patches');
-
-        if (!$this->files->isDirectory($directoryPath)) {
-            return [];
-        }
-
-        return collect($this->files->allFiles($directoryPath))
-            ->filter(fn (SplFileInfo $file) => $file->getExtension() === 'php')
-            ->sortBy(fn (SplFileInfo $file) => $file->getPathname())
-            ->map(fn (SplFileInfo $file) => $file->getPathname())
-            ->values()
-            ->all();
+        $this->patchFiles = new PatchFileRepository($files);
     }
 
     protected function getClassName(string $fullPath): string
@@ -51,11 +32,10 @@ class Patches
             ->replaceMatches('/^\d{4}_\d{2}_\d{2}_\d+_/u', '')
             ->studly()
             ->toString();
-
         $content = file_get_contents($fullPath);
-
         if (preg_match('/^namespace\s+([^;]+);/m', $content, $matches)) {
             $namespace = $matches[1];
+
             return "$namespace\\$className";
         }
 
@@ -70,173 +50,132 @@ class Patches
     public function runPatches(?Closure $log = null, ?callable $before = null, ?callable $after = null, ?int $limit = null): int
     {
         $log = $log ?: fn ($message) => null;
-        $this->executeGlobalHook(config('patches.callbacks.up.before'), $log);
-
+        $this->executeGlobalHook(config('sb-patches.callbacks.up.before'), $log);
         $lastBatch = $this->db->table('sb_patches')->max('batch') ?? 0;
         $currentBatch = $lastBatch + 1;
-
         if ($before) {
             $before();
         }
-
-        $patchFiles = $this->findAllPatchFiles();
-
+        $patchFiles = $this->patchFiles->findAll();
         $executedPatches = $this->db->table('sb_patches')->pluck('patch')->all();
-
         $patchesToRun = 0;
-        $patchesBasePath = database_path('patches') . DIRECTORY_SEPARATOR;
-
-        foreach ($patchFiles as $fullPath) {
-            $relativePath = Str::after($fullPath, $patchesBasePath);
-            $patchIdentifier = Str::before($relativePath, '.php');
-
+        foreach ($patchFiles as $patchFile) {
+            $fullPath = $patchFile['path'];
+            $patchIdentifier = $patchFile['identifier'];
             if (in_array($patchIdentifier, $executedPatches)) {
                 continue;
             }
-
             $log(" - Applying patch: {$patchIdentifier}");
-
+            $transactionStarted = false;
             try {
                 $returned = require $fullPath;
-
                 if (is_object($returned) && method_exists($returned, 'up')) {
                     $patchInstance = $returned;
                 } else {
                     $className = $this->getClassName($fullPath);
                     $patchInstance = new $className;
                 }
-
                 if ($patchInstance->transactional) {
                     $this->db->beginTransaction();
+                    $transactionStarted = true;
                 }
-
                 if (method_exists($patchInstance, 'up')) {
                     $patchInstance->up();
                 }
-
                 $this->db->table('sb_patches')->insert([
                     'patch' => $patchIdentifier,
-                    'batch' => $currentBatch
+                    'batch' => $currentBatch,
                 ]);
-
-                if ($patchInstance->transactional) {
+                if ($transactionStarted) {
                     $this->db->commit();
+                    $transactionStarted = false;
                 }
-
                 $patchesToRun++;
-
                 if ($limit !== null && $patchesToRun >= $limit) {
                     break;
                 }
             } catch (Throwable $e) {
-                throw new Exception("Failed to apply patch {$patchIdentifier}: " . $e->getMessage(), 0, $e);
+                if ($transactionStarted) {
+                    $this->db->rollBack();
+                }
+                throw new Exception("Failed to apply patch {$patchIdentifier}: ".$e->getMessage(), 0, $e);
             }
         }
-
         if ($after) {
             $after();
         }
-
-        $this->executeGlobalHook(config('patches.callbacks.up.after'), $log);
+        $this->executeGlobalHook(config('sb-patches.callbacks.up.after'), $log);
 
         return $patchesToRun;
     }
 
-
     /**
-     * Rolls back data patches based on the provided options.
-     * This is the main public method for all rollback operations.
-     *
-     * @param array $options Options can be ['step' => int] or ['all' => true]. No options means last batch.
-     * @param Closure|null $log A logger closure to receive output.
-     * @param callable|null $before A callable to execute before rollback starts.
-     * @param callable|null $after A callable to execute after rollback ends.
-     * @return int The number of patches rolled back.
      * @throws Exception
      */
-    public function rollback(
-        array $options = [],
-        ?Closure $log = null,
-        ?callable $before = null,
-        ?callable $after = null
-    ): int {
+    public function rollback(array $options = [], ?Closure $log = null, ?callable $before = null, ?callable $after = null): int
+    {
         $log = $log ?: fn ($message) => null;
-
-        $this->executeGlobalHook(config('patches.callbacks.down.before'), $log);
-
+        $this->executeGlobalHook(config('sb-patches.callbacks.down.before'), $log);
         if ($before) {
             $before();
         }
-
-        if (!empty($options['all'])) {
+        if (! empty($options['all'])) {
             $rolledBackCount = $this->performFullRollback($log);
-        } elseif (!empty($options['step'])) {
+        } elseif (! empty($options['step'])) {
             $rolledBackCount = $this->performStepRollback((int) $options['step'], $log);
         } else {
             $rolledBackCount = $this->performBatchRollback($log);
         }
-
         if ($after) {
             $after();
         }
-
-        $this->executeGlobalHook(config('patches.callbacks.down.after'), $log);
+        $this->executeGlobalHook(config('sb-patches.callbacks.down.after'), $log);
 
         return $rolledBackCount;
     }
 
     /**
-     * Rolls back the last batch of data patches.
      * @throws Exception
      */
     protected function performBatchRollback(Closure $log): int
     {
         $lastBatch = $this->db->table('sb_patches')->max('batch');
-
-        if (!$lastBatch) {
+        if (! $lastBatch) {
             $log('Nothing to rollback.');
+
             return 0;
         }
-
         $patchesToRollback = $this->db->table('sb_patches')
             ->where('batch', $lastBatch)
             ->orderBy('id', 'desc')
             ->get();
-
         if ($patchesToRollback->isEmpty()) {
             $log('No patches found in the last batch to rollback.');
+
             return 0;
         }
-
         $this->executeDownMethods($patchesToRollback, $log);
-
         $this->db->table('sb_patches')->where('batch', $lastBatch)->delete();
 
         return $patchesToRollback->count();
     }
 
-    /**
-     * Reverts a specified number of the last executed patches.
-     */
     protected function performStepRollback(int $steps, Closure $log): int
     {
         if ($steps <= 0) {
             return 0;
         }
-
         $patchesToRollback = $this->db->table('sb_patches')
             ->orderBy('batch', 'desc')
             ->orderBy('id', 'desc')
             ->limit($steps)
             ->get();
-
         if ($patchesToRollback->isEmpty()) {
             $log('No patches to rollback.');
+
             return 0;
         }
-
         $this->executeDownMethods($patchesToRollback, $log);
-
         $idsToDelete = $patchesToRollback->pluck('id');
         $this->db->table('sb_patches')->whereIn('id', $idsToDelete)->delete();
 
@@ -244,8 +183,6 @@ class Patches
     }
 
     /**
-     * @param Closure $log
-     * @return int
      * @throws Exception
      */
     protected function performFullRollback(Closure $log): int
@@ -254,57 +191,54 @@ class Patches
             ->orderBy('batch', 'desc')
             ->orderBy('id', 'desc')
             ->get();
-
         if ($patchesToRollback->isEmpty()) {
             $log('No patches to rollback.');
+
             return 0;
         }
-
         $this->executeDownMethods($patchesToRollback, $log);
-
         $this->db->table('sb_patches')->truncate();
 
         return $patchesToRollback->count();
     }
 
     /**
-     * Helper method to execute the 'down' method for a collection of patches.
      * @throws Exception
      */
     protected function executeDownMethods(Collection $patches, Closure $log): void
     {
         foreach ($patches as $patch) {
             $patchIdentifier = $patch->patch;
-            $file = database_path('patches/' . $patchIdentifier . '.php');
-
+            $file = $this->patchFiles->resolve($patchIdentifier);
             $log(" - Rolling back patch: {$patchIdentifier}");
-
-            if (!$this->files->exists($file)) {
-                throw new Exception("Patch file not found: {$file}");
+            if ($file === null) {
+                throw new Exception("Patch file not found for identifier: {$patchIdentifier}");
             }
-
-            // Support both anonymous (returned instance) and named classes.
             $returned = require $file;
-
             if (is_object($returned) && method_exists($returned, 'down')) {
                 $instance = $returned;
             } else {
                 $className = $this->getClassName($file);
                 $instance = new $className;
             }
-
-            if (!method_exists($instance, 'down')) {
+            if (! method_exists($instance, 'down')) {
                 throw new Exception("Rollback failed. Method down() does not exist in patch: {$patchIdentifier}");
             }
-
-            if ($instance->transactional) {
-                $this->db->beginTransaction();
-            }
-
-            $instance->down();
-
-            if ($instance->transactional) {
-                $this->db->commit();
+            $transactionStarted = false;
+            try {
+                if ($instance->transactional) {
+                    $this->db->beginTransaction();
+                    $transactionStarted = true;
+                }
+                $instance->down();
+                if ($transactionStarted) {
+                    $this->db->commit();
+                }
+            } catch (Throwable $e) {
+                if ($transactionStarted) {
+                    $this->db->rollBack();
+                }
+                throw $e;
             }
         }
     }
@@ -312,16 +246,21 @@ class Patches
     public function runSinglePatch(string $patchIdentifier, ?Closure $log = null): bool
     {
         $log = $log ?: fn ($message) => null;
-        $fullPath = database_path('patches' . DIRECTORY_SEPARATOR . $patchIdentifier . '.php');
+        try {
+            $fullPath = $this->patchFiles->resolve($patchIdentifier);
+        } catch (Throwable $e) {
+            $log('   - ERROR: '.$e->getMessage());
 
-        if (!$this->files->exists($fullPath)) {
-            $log("   - ERROR: Patch file not found at '{$fullPath}'");
             return false;
         }
 
+        if ($fullPath === null) {
+            $log("   - ERROR: Patch file not found for identifier '{$patchIdentifier}'");
+
+            return false;
+        }
         try {
             $log(" - Force running patch: {$patchIdentifier}");
-
             $returned = require $fullPath;
             if (is_object($returned) && method_exists($returned, 'up')) {
                 $patchInstance = $returned;
@@ -329,16 +268,30 @@ class Patches
                 $className = $this->getClassName($fullPath);
                 $patchInstance = new $className;
             }
-
-            if (method_exists($patchInstance, 'up')) {
-                $patchInstance->up();
+            $transactionStarted = false;
+            try {
+                if ($patchInstance->transactional) {
+                    $this->db->beginTransaction();
+                    $transactionStarted = true;
+                }
+                if (method_exists($patchInstance, 'up')) {
+                    $patchInstance->up();
+                }
+                if ($transactionStarted) {
+                    $this->db->commit();
+                }
+            } catch (Throwable $e) {
+                if ($transactionStarted) {
+                    $this->db->rollBack();
+                }
+                throw $e;
             }
-
             $log('   - Patch executed successfully.');
 
             return true;
         } catch (Throwable $e) {
-            $log("   - ERROR: Failed to run patch {$patchIdentifier}: " . $e->getMessage());
+            $log("   - ERROR: Failed to run patch {$patchIdentifier}: ".$e->getMessage());
+
             return false;
         }
     }
@@ -353,98 +306,10 @@ class Patches
     }
 
     /**
-     * @param string $name
-     * @return string
      * @throws Exception
      */
-    public function createPatch(string $name): string
+    public function createPatch(string $name, bool $module = false, bool $withData = false): string
     {
-        $directoryPath = database_path('patches');
-        $this->files->ensureDirectoryExists($directoryPath);
-
-        $snakeName = Str::snake(trim($name));
-        $fileName = $this->generateFileName($directoryPath, $snakeName);
-        $fullPath = $directoryPath.DIRECTORY_SEPARATOR.$fileName;
-
-        if ($this->files->exists($fullPath)) {
-            throw new Exception("Patch file {$fileName} already exists.");
-        }
-
-        $fileContent = $this->createPatchFileContent();
-        $this->files->put($fullPath, $fileContent);
-
-        return $fullPath;
-    }
-
-    /**
-     * Generates a unique filename following the date_increment_name convention.
-     */
-    protected function generateFileName(string $directoryPath, string $snakeName): string
-    {
-        $date = now()->format('Y_m_d');
-        $filesToday = $this->files->glob($directoryPath.'/'.$date.'_*.php');
-
-        $lastIncrement = 0;
-        if (count($filesToday) > 0) {
-            foreach ($filesToday as $file) {
-                if (preg_match('/'.$date.'_(\d{6})_/', basename($file), $matches)) {
-                    $increment = (int) $matches[1];
-                    if ($increment > $lastIncrement) {
-                        $lastIncrement = $increment;
-                    }
-                }
-            }
-        }
-
-        $newIncrement = $lastIncrement + 1;
-        $paddedIncrement = str_pad((string) $newIncrement, 6, '0', STR_PAD_LEFT);
-
-        return "{$date}_{$paddedIncrement}_{$snakeName}.php";
-    }
-
-    /**
-     * Generates the class name from the filename.
-     */
-    protected function generateClassName(string $fileName): string
-    {
-        $namePart = preg_replace('/^\d{4}_\d{2}_\d{2}_\d{6}_/', '', $fileName);
-        $namePart = Str::before($namePart, '.php');
-
-        return Str::studly($namePart);
-    }
-
-    protected function createPatchFileContent(): string
-    {
-        return <<<PHP
-<?php
-
-use SimoneBianco\\Patches\\Patch;
-
-return new class extends Patch
-{
-    /**
-    * Indicates if the patch should be run within a transaction.
-    * @var bool
-    */
-    public bool \$transactional = false;
-
-    /**
-     * Run the data patch.
-     */
-    public function up(): void
-    {
-        // Add your data modification logic here.
-    }
-
-    /**
-     * Reverse the data patch.
-     */
-    public function down(): void
-    {
-        // Add logic to reverse the changes made in the up() method.
-    }
-};
-
-PHP;
+        return $this->patchFiles->create($name, $module, $withData);
     }
 }

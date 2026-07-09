@@ -1,160 +1,136 @@
 # Laravel Data Patches
 
-[](https://www.google.com/search?q=https://packagist.org/packages/simonebianco/laravel-patches)
-[](https://www.google.com/search?q=https://packagist.org/packages/simonebianco/laravel-patches)
-[](https://www.google.com/search?q=https://github.com/simonebianco/laravel-patches/actions)
+This package provides a migration-like system for incremental Laravel data changes. It is designed for data that should be ordered, replayable, reversible, and easier to review than a large monolithic seeder.
 
-This package provides a robust, migration-like system for managing incremental data changes in your Laravel application. Instead of messy, non-repeatable seeders, you can create timestamped "patch" files that are tracked in the database, can be rolled back, and can be organized into subdirectories.
+Use it for:
 
-It's the perfect solution for:
-
-- Seeding initial application data (like user roles, settings, countries, etc.).
-- Deploying data changes to a production environment in a controlled and reversible way.
-- Organizing complex data modifications into logical, ordered steps.
-
------
+- Replacing bulky Laravel seeders with small, ordered data patches.
+- Seeding initial application data such as roles, settings, content, sources, reference data, or demo/domain records.
+- Deploying controlled production data changes that need a rollback path.
+- Keeping large seed payloads close to their patch without making every support file executable.
 
 ## Installation
 
-You can install the package via composer:
-
 ```bash
 composer require simonebianco/laravel-patches
-```
-
-Next, you should publish the package's assets (configuration file and migration):
-
-```bash
 php artisan vendor:publish --provider="SimoneBianco\Patches\PatchesServiceProvider"
-```
-
-This will publish:
-
-- A configuration file to `config/patches.php`.
-- A migration file to `database/migrations/`.
-
-Finally, run the migration to create the `data_patches` table, which will track the executed patches.
-
-```bash
 php artisan migrate
 ```
 
------
+Publishing creates:
 
-## Configuration ⚙️
+- `config/sb-patches.php`
+- a migration for the `sb_patches` tracking table
 
-The configuration file `config/patches.php` allows you to define global hooks that run before and after the patch processes. This is useful for tasks like disabling model observers during execution or clearing the application cache afterward.
+## Configuration
 
-Each hook must be a fully qualified class name that contains an `__invoke` method.
+`config/sb-patches.php` can define global hooks around patch execution and rollback. Each hook must be a fully qualified class with an `__invoke` method.
 
 ```php
-// config/patches.php
-
 return [
     'callbacks' => [
         'up' => [
-            // Executed before `patch:apply` starts
-            'before' => null, 
-            // Executed after `patch:apply` finishes
-            'after' => App\Patches\Hooks\ClearCache::class, 
+            'before' => null,
+            'after' => App\Patches\Hooks\ClearCache::class,
         ],
         'down' => [
-            // Executed before `patch:rollback` starts
             'before' => null,
-            // Executed after `patch:rollback` finishes
             'after' => null,
         ],
     ],
 ];
 ```
 
-#### Example Hook Class
+## Patch formats
 
-```php
-// app/Patches/Hooks/ClearCache.php
+The package supports two executable patch formats under `database/patches`.
 
-namespace App\Patches\Hooks;
+### 1. Classic file patch
 
-use Illuminate\Support\Facades\Artisan;
-
-class ClearCache
-{
-    public function __invoke(): void
-    {
-        Artisan::call('cache:clear');
-        Artisan::call('config:clear');
-    }
-}
+```txt
+database/patches/settings/site/2026_07_09_000001_add_maintenance_mode.php
 ```
 
------
+This is best for small data changes where the full patch fits cleanly in one file.
 
-## Directory structure
+### 2. Module patch directory
 
-Below is an example structure for organizing your patches. You can nest as deep as you need:
+```txt
+database/patches/countdowns/taiwan_invasion/2026_07_09_010020_seed_projections/
+  patch.php
+  data.php
+  data1.php
+  data2.php
+  notes.md
+  source-map.json
+```
 
-![Directory structure](z-doc/directories.png)
+The runner executes only `patch.php`. Any other file inside the module directory is support material and is ignored by discovery, even if it is PHP.
 
------
+Module patches are the recommended format for substantial seed data. Keep `patch.php` focused on behavior and put large arrays, JSON payloads, localized copy, source maps, or helper data next to it.
 
-## Usage
+## Identifiers and order
 
-### 1\. Creating a Patch
+Patch identifiers are normalized paths relative to `database/patches`.
 
-To create a new patch, use the `make:patch` Artisan command. The patch files will be stored in the `database/patches` directory.
+Classic file:
+
+```txt
+database/patches/settings/site/2026_07_09_000001_add_maintenance_mode.php
+```
+
+identifier:
+
+```txt
+settings/site/2026_07_09_000001_add_maintenance_mode
+```
+
+Module patch:
+
+```txt
+database/patches/settings/site/2026_07_09_000001_add_maintenance_mode/patch.php
+```
+
+identifier:
+
+```txt
+settings/site/2026_07_09_000001_add_maintenance_mode
+```
+
+Execution order is alphabetical/natural by identifier. This keeps ordering based on names and timestamp prefixes, regardless of whether a patch is a direct file or a module directory.
+
+A duplicate classic/module identifier is invalid. For example, these two cannot coexist:
+
+```txt
+database/patches/foo/2026_07_09_000001_seed.php
+database/patches/foo/2026_07_09_000001_seed/patch.php
+```
+
+## Creating patches
+
+Create a classic patch file:
 
 ```bash
-php artisan make:patch seed_initial_roles_and_permissions
+php artisan make:patch settings/site/add_maintenance_mode
 ```
 
-This will create a file with the naming convention `YYYY_MM_DD_XXXXXX_seed_initial_roles_and_permissions.php`.
-
-You can also create patches in subdirectories for better organization:
+Create a module patch directory:
 
 ```bash
-php artisan make:patch settings/site/add_maintenance_mode_setting
+php artisan make:patch countdowns/taiwan_invasion/seed_projections --module
 ```
 
-This will create the file inside `database/patches/settings/site/`.
+Create a module patch with an empty `data.php` file:
 
-### 2\. The Patch File Structure
-
-Each patch file is a simple class with two methods: `up()` and `down()`.
-
-- `up()`: Contains the logic to apply the data change.
-- `down()`: Contains the logic to reverse the change.
-
-<!-- end list -->
-
-```php
-<?php
-
-use Spatie\Permission\Models\Role; // Example using a popular package
-
-class SeedInitialRolesAndPermissions
-{
-    /**
-     * Run the data patch.
-     */
-    public function up(): void
-    {
-        Role::create(['name' => 'admin']);
-        Role::create(['name' => 'editor']);
-    }
-
-    /**
-     * Reverse the data patch.
-     */
-    public function down(): void
-    {
-        Role::whereIn('name', ['admin', 'editor'])->delete();
-    }
-}
+```bash
+php artisan make:patch countdowns/taiwan_invasion/seed_projections --module --data
 ```
 
-#### Transactions (optional)
+`--data` implies `--module`.
 
-If you need your patch to run inside a single database transaction, set the public `$transactional` flag on your patch class. When `true`, the runner will wrap `up()` and `down()` in a DB transaction.
+## Patch structure
+
+A patch returns an anonymous class extending `Patch`.
 
 ```php
 <?php
@@ -163,113 +139,153 @@ use SimoneBianco\Patches\Patch;
 
 return new class extends Patch
 {
-    public bool $transactional = true; // run inside a transaction
+    public bool $transactional = true;
 
     public function up(): void
     {
-        // ... data changes
+        // Apply data changes.
     }
 
     public function down(): void
     {
-        // ... reverse data changes
+        // Reverse data changes.
     }
 };
 ```
 
-Note: transactions are disabled by default (`false`). Enable them only when you need all operations in the patch to succeed or fail together.
+For module patches, `patch.php` may read local support files.
 
-### 3. Applying Patches ⚡️
+```php
+<?php
 
-To run all pending patches that haven't been executed yet, use the `patch:run` command. The system will find all `.php` files recursively, sort them alphabetically by path, and execute them in order.
+use App\Models\Setting;
+use SimoneBianco\Patches\Patch;
+
+return new class extends Patch
+{
+    public bool $transactional = true;
+
+    public function up(): void
+    {
+        foreach (require __DIR__.'/data.php' as $setting) {
+            Setting::query()->updateOrCreate(
+                ['key' => $setting['key']],
+                $setting,
+            );
+        }
+    }
+
+    public function down(): void
+    {
+        Setting::query()
+            ->whereIn('key', array_column(require __DIR__.'/data.php', 'key'))
+            ->delete();
+    }
+};
+```
+
+```php
+<?php
+
+// data.php
+return [
+    ['key' => 'site.maintenance', 'value' => false],
+];
+```
+
+## Applying patches
+
+Run all pending patches:
 
 ```bash
 php artisan patch:run
 ```
 
-You can also limit how many patches are applied in one run using the `--step` option:
+Limit the number of applied patches:
 
 ```bash
 php artisan patch:run --step=1
 ```
 
-#### Forcing a Single Patch
+The runner discovers executable entries only:
 
-For debugging or testing purposes, you can force-run a single patch, even if it has already been applied. This command **does not** record the execution in the tracking table.
+- timestamped direct PHP files: `YYYY_MM_DD_XXXXXX_name.php`
+- `patch.php` inside timestamped module directories: `YYYY_MM_DD_XXXXXX_name/patch.php`
 
-The patch name is its path relative to the `patches` directory.
+Non-timestamped PHP files and module support files are ignored.
 
-```bash
-php artisan patch:single settings/site/2025_09_25_000001_add_maintenance_mode_setting
-```
+## Forcing a single patch
 
-#### Re-apply from scratch (fresh)
-
-Roll back applied patches and re-apply all pending patches in one go:
+Run one patch by identifier without recording it in `sb_patches`:
 
 ```bash
-php artisan patch:fresh
+php artisan patch:single settings/site/2026_07_09_000001_add_maintenance_mode
 ```
 
-### 4. Rolling Back Patches ↩️
+This resolves both classic and module formats. It is useful for compatibility seeders and explicit replay/debug checks, not for normal deploy tracking.
 
-The `patch:rollback` command is powerful and flexible, mirroring Laravel's `migrate:rollback`.
+## Rolling back patches
 
-#### Roll Back the Last Batch
-
-This is the default behavior. It will roll back all patches that were applied in the last `patch:run` run.
+Roll back the last batch:
 
 ```bash
 php artisan patch:rollback
 ```
 
-#### Roll Back by Steps
-
-To roll back a specific number of the most recently applied patches, regardless of their batch, use the `--step` option.
+Roll back a number of recently applied patches:
 
 ```bash
 php artisan patch:rollback --step=3
 ```
 
-#### Roll Back All Patches
-
-To roll back every single patch that has been applied, use the `--all` option. **This is a destructive operation.**
+Roll back every applied patch:
 
 ```bash
 php artisan patch:rollback --all
 ```
 
-### 5\. Production Safety ⚠️
-
-Running a rollback in a production environment is risky. Therefore, if your `APP_ENV` is set to `production`, the `patch:rollback` command will prompt you for confirmation before executing.
-
-To bypass this confirmation in your deployment scripts, use the `--force` flag.
+Rollback in production asks for confirmation. Use `--force` only in controlled deployment scripts.
 
 ```bash
 php artisan patch:rollback --step=1 --force
 ```
 
-### 6\. Advanced Usage: Using the Facade
+Re-apply from scratch:
 
-You can also trigger the patch operations directly from your application code using the `Patches` facade.
+```bash
+php artisan patch:fresh
+```
+
+## Using the facade
 
 ```php
 use SimoneBianco\Patches\Facades\Patches;
 
-// Apply all pending patches
 $patchesRun = Patches::runPatches();
-
-// Roll back the last batch
 $rolledBackCount = Patches::rollback();
-
-// Roll back 5 steps
 $rolledBackCount = Patches::rollback(['step' => 5]);
-
-// Create a new patch file programmatically
-$filePath = Patches::createPatch('update_user_country_codes');
+$filePath = Patches::createPatch('settings/site/add_maintenance_mode');
+$modulePath = Patches::createPatch('content/seed_homepage', true, true);
 ```
 
------
+## Seeder best practices
+
+Large seeders should be split into patch modules rather than kept as one huge seeder class.
+
+Recommended split examples:
+
+```txt
+database/patches/content/homepage/2026_07_09_000001_seed_page/patch.php
+database/patches/content/homepage/2026_07_09_000001_seed_page/data.php
+
+database/patches/content/homepage/2026_07_09_000002_seed_blocks/patch.php
+database/patches/content/homepage/2026_07_09_000002_seed_blocks/data.php
+
+database/patches/content/homepage/2026_07_09_000003_seed_sources/patch.php
+database/patches/content/homepage/2026_07_09_000003_seed_sources/sources.json
+```
+
+Keep each patch responsible for one reversible concern. Avoid broad deletes, truncates, or unrelated data cleanup inside seed patches.
 
 ## Testing
 
@@ -277,18 +293,6 @@ $filePath = Patches::createPatch('update_user_country_codes');
 composer test
 ```
 
-## Changelog
-
-Please see [CHANGELOG](CHANGELOG.md) for more information on what has changed recently.
-
-## Contributing
-
-Please see [CONTRIBUTING](https://www.google.com/search?q=CONTRIBUTING.md) for details.
-
-## Security Vulnerabilities
-
-Please review [link sospetto rimosso] on how to report security vulnerabilities.
-
 ## License
 
-The MIT License (MIT). Please see [License File](LICENSE.md) for more information.
+The MIT License (MIT). Please see the license file for more information.
